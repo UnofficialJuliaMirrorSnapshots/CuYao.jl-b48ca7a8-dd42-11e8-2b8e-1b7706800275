@@ -16,13 +16,6 @@ end
 
 import CUDAnative: pow, abs, angle
 for (RT, CT) in [(:Float64, :ComplexF64), (:Float32, :ComplexF32)]
-    @eval CUDAnative.angle(z::$CT) = CUDAnative.atan2(CUDAnative.imag(z), CUDAnative.real(z))
-    @eval function CUDAnative.abs(z::$CT)
-        i = CUDAnative.imag(z)
-        r = CUDAnative.real(z)
-        CUDAnative.sqrt(i*i+r*r)
-    end
-
     @eval cp2c(d::$RT, a::$RT) = CUDAnative.ComplexF64(d*CUDAnative.cos(a), d*CUDAnative.sin(a))
     for NT in [RT, :Int32]
         @eval CUDAnative.pow(z::$CT, n::$NT) = CUDAnative.ComplexF64((CUDAnative.pow(CUDAnative.abs(z), n)*CUDAnative.cos(n*CUDAnative.angle(z))), (CUDAnative.pow(CUDAnative.abs(z), n)*CUDAnative.sin(n*CUDAnative.angle(z))))
@@ -63,6 +56,7 @@ export piecewise, cudiv
     threads_x, ceil(Int, x/threads_x)
 end
 
+# NOTE: the maximum block size is 65535
 @inline function cudiv(x::Int, y::Int)
     max_threads = 256
     threads_x = min(max_threads, x)
@@ -72,12 +66,15 @@ end
     threads, blocks
 end
 
+fix_cudiv(A::AbstractVector, firstdim::Int) = cudiv(firstdim)
+fix_cudiv(A::AbstractMatrix, firstdim::Int) = cudiv(firstdim, size(A,2))
+
 piecewise(state::AbstractVector, inds) = state
 piecewise(state::AbstractMatrix, inds) = @inbounds view(state,:,inds[2])
 
 import Base: kron, getindex
 function kron(A::Union{CuArray{T1}, Adjoint{<:Any, <:CuArray{T1}}}, B::Union{CuArray{T2}, Adjoint{<:Any, <:CuArray{T2}}}) where {T1, T2}
-    res = CuArrays.cuzeros(promote_type(T1,T2), (size(A).*size(B))...)
+    res = CuArrays.zeros(promote_type(T1,T2), (size(A).*size(B))...)
     @inline function kernel(res, A, B)
         state = (blockIdx().x-1) * blockDim().x + threadIdx().x
         inds = GPUArrays.gpu_ind2sub(res, state)
@@ -93,7 +90,7 @@ function kron(A::Union{CuArray{T1}, Adjoint{<:Any, <:CuArray{T1}}}, B::Union{CuA
 end
 
 function getindex(A::CuVector{T}, B::CuArray{<:Integer}) where T
-    res = CuArrays.cuzeros(T, size(B)...)
+    res = CuArrays.zeros(T, size(B)...)
     @inline function kernel(res, A, B)
         state = (blockIdx().x-1) * blockDim().x + threadIdx().x
         state <= length(res) && (@inbounds res[state] = A[B[state]])
